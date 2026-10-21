@@ -46,7 +46,7 @@ Windows (PowerShell):
 ```powershell
 git clone https://github.com/andrewboe/ygo-format.git
 cd ygo-format
-py -3.12 -m venv .venv
+py -3 -m venv .venv
 .venv\Scripts\python -m pip install -e .
 claude mcp add --scope user ygo-format -- "$PWD\.venv\Scripts\python.exe" -m ygoformat.mcp_server
 ```

@@ -6,9 +6,10 @@ cover Claude Code and Claude Desktop.
 ## Requirements
 
 - Python 3.10 or newer (tested on 3.12).
-- Internet access on first use. The server downloads the card database from YGOProDeck and builds a
-  local index (about 30 MB) the first time a tool is called, so that first call takes a minute or so.
-  After that it re-checks the data at most once a day.
+- Internet access on first use. The first tool call downloads the card database from YGOProDeck and
+  builds a local index (about 30 MB on disk; a few seconds on a fast connection, up to a minute on a
+  slow one). The first `meta_snapshot` / `meta_inclusion` call also downloads recent tournament lists
+  (about 20 seconds). After that the data is re-checked at most once a day (meta: every 12 hours).
 - Optional, for line search only: Windows with WSL and a working [ygo-sim](https://github.com/andrewboe/ygo-sim)
   checkout (see the last section).
 
@@ -19,7 +20,8 @@ Windows (PowerShell):
 ```powershell
 git clone https://github.com/andrewboe/ygo-format.git
 cd ygo-format
-py -3.12 -m venv .venv
+py -3 -m venv .venv
+# (or: python -m venv .venv, with Python 3.10+)
 .venv\Scripts\python -m pip install -e .
 ```
 
