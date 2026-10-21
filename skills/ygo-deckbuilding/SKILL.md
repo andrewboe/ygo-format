@@ -57,6 +57,12 @@ They are slow and noisy, so they are a teaching tool, not a validation step.
   can leave out materials or show bare "Yes" prompts, and lines can contain pointless actions
   (negating your own cards). If the best line is "End the turn" or looks wrong, say so and give your own
   reading of the card text, marked as untested.
+- **Draws are not part of the hand.** Only the 5 hand cards are stacked; the rest of the deck sits in a
+  fixed order the search can see, so anything drawn mid-line (Vision, Engage!, Pot of Desires, Diamond
+  Dude…) is luck the engine "knew" in advance. Find which cards were drawn: any card the line uses from
+  the hand that was neither in the starting 5 nor added by a "Select to add to hand" step. Never present
+  a drawn card as available. Build the answer from the starting 5 plus searched cards only, and give
+  steps that need a drawn card as "if you draw X" with a fallback for when you don't.
 
 **Answer format.** Turn the engine's line into a lesson, checked against card text:
 1. **Numbered steps**, one action each, in the engine's order. For each step:

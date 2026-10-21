@@ -424,3 +424,17 @@ db 147.37), saved as `data/decks/sky-striker-radiant-typhoon.tcg_advanced.ydk`. 
 **Renamed in find_links output:** `reaches_your` → `fetches_your`, `reached_by` → `fetched_by`, `reaches_unplayed` → `fetches_unplayed`.
 
 **Not changed:** 9 and 10 are only partly addressed. Materials are still matched by type: lock-compatible options now rank first and nothing is hidden (`more_not_shown`), but whether a summon is achievable isn't modelled. The find_lines / line_result items (1–5, 4c–4e, 40–43) and data gaps (15, El Shaddoll Meshachrer, Shadowreaver Knight 21, Layer 19) are outside these files.
+
+## Live use: Sky Striker RT Vision hand (2026-10-21)
+
+48. **find_lines builds lines on draws it can see in advance.** `wsl/line_finder.py` (in ygo-sim) stacks only
+    the 5 hand cards and writes the rest of the Main Deck in the saved .ydk order with `shuffle1=False`, so
+    every mid-line draw is fixed and visible to the search. Hand `[Engage!, Forbidden Droplet, Radiant
+    Typhoon Vision, Linkage!, Droll & Lock Bird]` (quick depth): the best line used Reinforcement of the
+    Army and Radiant Typhoon Mandate, which Vision drew because they were the last cards in the file. The
+    user didn't draw them, and the line fell apart at "use Reinforcement to add Raye". The step log never
+    names drawn cards (`"Yes: Draw 1 card?"`), so they look like hand cards.
+    Fix (engine side): shuffle the non-hand cards with a per-restart seed, so restarts see different
+    draws; record each draw in the step log (`"Draw: <card>"`) and as `drawn` per line; prefer, or
+    score separately, lines that don't use drawn cards. Skill updated meanwhile: drawn cards are
+    "if you draw X" steps, never part of the line.
