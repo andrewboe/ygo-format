@@ -438,3 +438,11 @@ db 147.37), saved as `data/decks/sky-striker-radiant-typhoon.tcg_advanced.ydk`. 
     draws; record each draw in the step log (`"Draw: <card>"`) and as `drawn` per line; prefer, or
     score separately, lines that don't use drawn cards. Skill updated meanwhile: drawn cards are
     "if you draw X" steps, never part of the line.
+    **Fixed (2026-10-21, ygo-sim `wsl/line_finder.py`, uncommitted there):** the non-hand cards are shuffled
+    per search start (seeded by the request's `seed`), and each line reports `drawn` plus `"Draw: <card>"`
+    steps. Draws are detected from the engine's event ring: a card that joins the hand without an `MSG_MOVE`
+    into the hand (searches and returns send one; draws send `MSG_DRAW`) is a draw. A first version that
+    tracked the top of the deck broke as soon as a search reshuffled the deck. Retest on the same hand: three
+    starts drew three different pairs off Vision, Zero's Shark Cannon search was not flagged, and Engage!'s
+    draw (Ghost Belle) was. Side note: the engine's card DB names Hey, Space Trunade! by its OCG name,
+    "Spatial Trunade", in step logs.

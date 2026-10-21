@@ -259,8 +259,10 @@ def find_lines(
 @server.tool(annotations=READ_ONLY)
 def line_result(job_id: str) -> dict:
     """Result of a find_lines search: status running / done / failed. When done: the hand and up to one line per
-    search start (best first), each with score, the steps in order, the end board, the hand left and the
-    interruptions that stayed live. Cards the engine can't play (new sets without scripts) are reported."""
+    search start (best first), each with score, the steps in order, the end board, the hand left, the
+    interruptions that stayed live and "drawn": cards drawn during the line (also "Draw: <card>" steps). The deck
+    is shuffled per search start, so draws are luck: never present a drawn card as part of the hand; give steps
+    that need one as "if you draw X". Cards the engine can't play (new sets without scripts) are reported."""
     return _call(linefinder.result, job_id)
 
 
