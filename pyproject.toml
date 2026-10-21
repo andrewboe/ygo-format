@@ -3,6 +3,7 @@ name = "ygo-format"
 version = "0.1.0"
 description = "Format-aware Yu-Gi-Oh! card data and an MCP server for deckbuilding (TCG Advanced, Genesys)"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = ["requests>=2.31", "mcp>=2.3,<3"]
 

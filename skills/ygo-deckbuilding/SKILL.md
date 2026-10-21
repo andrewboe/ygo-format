@@ -51,8 +51,8 @@ They are slow and noisy, so they are a teaching tool, not a validation step.
 - **Depth:** start with `depth="quick"` (~10 s). Use `normal` or `deep` (~1–4 min) only when the user
   asks, or when quick returns nothing better than passing; say which depth you used.
 - **Deck:** pass `saved_deck` when the user means a saved list. Run one job at a time; parallel jobs slow
-  each other down. Wait for the result with a background `until [ -s /c/Users/andre/Desktop/ygo-sim/data/line_jobs/<id>/result.json ]`
-  loop, not by polling `line_result`.
+  each other down. Wait for the result with a background `until [ -s <data dir>/line_jobs/<id>/result.json ]`
+  loop (data dir: `YGO_FORMAT_DATA`, or the default in docs/INSTALL.md), not by polling `line_result`.
 - **Don't trust the raw result blindly.** Scoring can rank passing above an unfinished line, the step log
   can leave out materials or show bare "Yes" prompts, and lines can contain pointless actions
   (negating your own cards). If the best line is "End the turn" or looks wrong, say so and give your own

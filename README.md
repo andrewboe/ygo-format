@@ -85,4 +85,5 @@ Tests run offline against pinned fixtures in `tests/fixtures`. Design notes: [do
 This project was split out of [ygo-sim](https://github.com/andrewboe/ygo-sim) at commit `6aa4d34`;
 ygo-sim now depends on it for card data and formats.
 
-Yu-Gi-Oh! is a trademark of Konami. This project is not affiliated with or endorsed by Konami.
+Licensed under the [MIT License](LICENSE). Card data, rulings and meta are fetched from the sources above
+and remain theirs. Yu-Gi-Oh! is a trademark of Konami. This project is not affiliated with or endorsed by Konami.
