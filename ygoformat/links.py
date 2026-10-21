@@ -41,7 +41,20 @@ REACH = re.compile(
     r'(?P<desc>(?:"[^"\n]{1,80}"|,(?=\s+(?:or\s+|except\s+)?[A-Z"])|[^;:.,●\n"]){1,120}?),?\s+(?:directly\s+)?'
     r'from\s+(?:among\s+)?(?:your\s+)?'
     rf"(?P<zones>{ZONE}(?:(?:,\s*|\s+or\s+|,\s*or\s+|\s+and/or\s+)(?:your\s+)?{ZONE})*)", re.I)
-LOCK = re.compile(r"cannot Special Summon(?P<mid>[^.;]*?),?\s+except (?P<desc>[^.;]+?)(?=\.|;|$)", re.I)
+# The except-clause ends at the sentence end or where the sentence moves on (", also ...", ", the turn you
+# activate this card"), so 'except "Sky Striker Ace" monsters, also send 1 card' parses as just the archetype.
+LOCK = re.compile(r"cannot Special Summon(?P<mid>[^.;]*?),?\s+except (?P<desc>[^.;]+?)"
+                  r"(?=\.|;|$|,\s+(?:also|and|then)\b|,?\s+the turn\b|,?\s+for the rest\b)", re.I)
+# Turn-wide restrictions that are not Special Summon locks but still kill combos.
+RESTRICT = re.compile(r"you cannot (?:activate|use) (?:monster effects|cards or effects|the effects of monsters)[^.;]*",
+                      re.I)
+EMPTY_MMZ = re.compile(r"(?:if|while) you (?:control|have) no monsters in your Main Monster Zone", re.I)
+FUSION = re.compile(r"\bFusion Summon (?:1|a|an|up to \d+) (?P<desc>[^.;]*?)(?:,\s*|\s+)"
+                    r"(?:using|by (?:shuffling|banishing|sending|Tributing|returning|placing))(?P<mats>[^.;]*)", re.I)
+# 'that lists a "Destiny HERO" monster as material', 'that mentions "A" or "B" as material', 'that mentions "X"'
+LISTS_MATERIAL = re.compile(r'(?:that|which) (?:mentions?|lists?|specifically lists?) (?:an? )?'
+                            r'(?P<q>"[^"]+"(?:\s*,?\s*(?:or|and)\s+"[^"]+")*)(?:\s+(?:monster|card)s?)?'
+                            r'(?: as (?:Fusion )?materials?)?', re.I)
 # 'always treated as a "Magistus" and "Witchcrafter" card': every quoted name in the clause counts.
 TREATED = re.compile(r'always treated as (?:an? )?"[^"]+"'
                      r'(?:(?: card)?(?:,\s+(?:and\s+|or\s+)?|\s+and\s+|\s+or\s+)(?:an? )?"[^"]+")*', re.I)
@@ -103,7 +116,8 @@ def parse_descriptor(desc: str, card_names: frozenset[str]) -> dict:
 
 
 def specificity(f: dict) -> int:
-    return sum(1 for k in ("names", "archetypes", "mentions", "attributes", "races", "level", "atk", "def") if f.get(k))
+    return sum(1 for k in ("names", "archetypes", "mentions", "material_mentions", "attributes", "races", "level",
+                           "atk", "def") if f.get(k))
 
 
 # ---------------------------------------------------------------- card facts
@@ -122,10 +136,15 @@ class Facts:
     treated: tuple[str, ...]
     mentions: frozenset[str]
     kinds: set[str] = field(default_factory=set)
+    material_quotes: frozenset[str] = frozenset()  # quoted names in an Extra Deck monster's material line
 
     @property
     def is_monster(self) -> bool:
         return self.frame not in ("spell", "trap", "token", "skill")
+
+    @property
+    def is_extra(self) -> bool:
+        return bool({"fusion", "synchro", "xyz", "link"} & self.kinds)
 
 
 def treated_as(desc: str) -> tuple[str, ...]:
@@ -158,6 +177,9 @@ def matches(c: Facts, f: dict) -> bool:
                                                         _in_archetype(c, f.get("archetypes", ()))):
         return False
     if f.get("mentions") and not (set(f["mentions"]) & c.mentions):
+        return False
+    # 'lists a "Destiny HERO" monster as material': a quoted material that is, or contains, that name.
+    if f.get("material_mentions") and not any(x in q for x in f["material_mentions"] for q in c.material_quotes):
         return False
     if f.get("kinds") and not (set(f["kinds"]) & c.kinds):
         return False
@@ -219,6 +241,9 @@ def extract_card(desc: str, card_names: frozenset[str]) -> dict:
     for m in REACH.finditer(text):
         sentence, off = _sentence(text, m.start(), m.end())
         rest = text[m.end(): text.find(".", m.end()) if text.find(".", m.end()) >= 0 else len(text)]
+        # Only an except that belongs to this fetch, not one from a later lock in the same sentence
+        # (Sabatiel: 'add 1 "Fusion" Spell ..., also ... except "HERO" monsters').
+        rest = re.split(r",\s+(?:also|then|and)\b|;|\byou cannot\b", rest)[0]
         desc_text = m.group("desc")
         excluded = EXCEPT.findall(desc_text) + EXCEPT.findall(rest)
         desc_text = re.sub(r',?\s*except\s+"[^"]+"', "", desc_text)
@@ -236,14 +261,62 @@ def extract_card(desc: str, card_names: frozenset[str]) -> dict:
             zones = re.split(r",\s*or\s+|,\s*|\s+or\s+|\s+and/or\s+", m.group("zones"))
             effects.append({"verb": VERBS[m.group("verb").lower()],
                             "zones": [z.replace("your ", "").replace("Graveyard", "GY") for z in zones],
-                            "filter": f, "evidence": sentence[:300], "cost": 0 <= off < semi, "flags": flags})
+                            "filter": f, "evidence": _with_condition(text, m.start(), sentence),
+                            "cost": 0 <= off < semi, "flags": flags})
+    for m in FUSION.finditer(text):
+        effects += _fusion_effects(text, m, card_names, card_flags)
     locks = []
     for m in LOCK.finditer(text):
-        f = parse_descriptor(m.group("desc"), card_names)
-        if f:  # evidence is the lock clause itself; the sentence around it can be very long
-            locks.append({"scope": "extra" if "Extra Deck" in m.group("mid") else "all", "filter": f,
-                          "evidence": "you " + m.group(0)[:250]})
+        desc = m.group("desc")
+        # 'except "Artmage" monsters or from the Extra Deck': Extra Deck summons are exempt.
+        exempt_extra = bool(re.search(r"\b(?:or )?from the Extra Deck\b", desc))
+        desc = re.sub(r"\s*(?:,\s*)?(?:or )?from the Extra Deck\b", "", desc)
+        f = parse_descriptor(desc, card_names) if desc.strip() else {}
+        if not f and (non := re.search(r'non-"([^"]+)"', m.group("mid"))):
+            # 'cannot Special Summon non-"Vaylantz" monsters ..., except from the Extra Deck'
+            f = {"archetypes": [non.group(1)], "kinds": ["monster"]}
+        if not f and not exempt_extra:
+            continue
+        scope = "extra" if "Extra Deck" in m.group("mid") else ("main" if exempt_extra else "all")
+        # evidence is the lock clause itself; the sentence around it can be very long
+        locks.append({"scope": scope, "filter": f or {"kinds": ["(nothing)"]}, "evidence": "you " + m.group(0)[:250]})
+    for m in RESTRICT.finditer(text):
+        locks.append({"scope": "activation", "filter": {}, "evidence": m.group(0)[:250]})
+    if m := EMPTY_MMZ.search(text):
+        locks.append({"scope": "empty_mmz", "filter": {}, "evidence": _sentence(text, m.start(), m.end())[0][:250]})
     return {"effects": effects, "locks": locks}
+
+
+def _with_condition(text: str, start: int, sentence: str) -> str:
+    """The evidence sentence, prefixed by the effect's condition when that sits elsewhere (bullets)."""
+    head = _effect_head(text, start).strip()
+    if head and head not in sentence and len(head) < 200:
+        return (head + " … " + sentence)[:360]
+    return sentence[:300]
+
+
+def _fusion_effects(text: str, m: re.Match, card_names: frozenset[str], card_flags: list[str]) -> list[dict]:
+    """'Fusion Summon 1 Fusion Monster that lists "X" as material ..., using monsters from your hand or Deck'."""
+    desc = m.group("desc")
+    mentions = [q for lm in LISTS_MATERIAL.finditer(desc) for q in re.findall(r'"([^"]+)"', lm.group("q"))]
+    excluded = EXCEPT.findall(desc)
+    desc = LISTS_MATERIAL.sub(" ", desc)
+    desc = re.sub(r',?\s*except\s+"[^"]+"', " ", desc)
+    desc = re.sub(r"\bfrom (?:your|either player's) Extra Deck\b", " ", desc)
+    mats_from = [z for z in ("hand", "Deck", "field", "GY", "banished") if re.search(rf"\b{z}\b", m.group("mats"))]
+    sentence, _ = _sentence(text, m.start(), m.end())
+    out = []
+    for alt in re.split(r",?\s+or\s+(?:1|a|an)\s+", desc):
+        f = parse_descriptor(alt, card_names)
+        f.setdefault("kinds", ["fusion"])
+        if mentions:
+            f["material_mentions"] = mentions
+        if excluded:
+            f["exclude"] = excluded
+        flags = list(card_flags) + ([f"materials from: {', '.join(mats_from)}"] if mats_from else [])
+        out.append({"verb": "fusion", "zones": ["Extra Deck"], "filter": f,
+                    "evidence": _with_condition(text, m.start(), sentence), "cost": False, "flags": flags})
+    return out
 
 
 def parse_materials(line: str, card_names: frozenset[str]) -> list[dict] | None:

@@ -14,6 +14,8 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+import requests
+
 from .api import _get
 from .formats import DeckInputError, resolve
 
@@ -146,9 +148,19 @@ def card_rulings(con: sqlite3.Connection, card: str, with_card: str | None = Non
         return _card_rulings(con, card, with_card, query, limit, fetch)
     except DeckInputError:
         raise
-    except Exception as e:  # network or unexpected response: say so instead of failing the call
+    except (requests.RequestException, OSError) as e:  # network: say so instead of failing the call
         raise DeckInputError(f"YGOResources request failed ({type(e).__name__}: {e}); "
                              "cached rulings are still used when available") from None
+    except (AttributeError, KeyError, TypeError, ValueError) as e:  # their data in a shape this code doesn't handle
+        raise DeckInputError(f"could not read YGOResources data for this card ({type(e).__name__}: {e}); "
+                             "this is a bug in card_rulings, not a network problem") from None
+
+
+def _entry_key(k: str) -> float:
+    try:
+        return float(k)  # FAQ entry keys can be "0.5" or "1.5" (notes between numbered effects)
+    except ValueError:
+        return float("inf")
 
 
 def _card_rulings(con, card, with_card, query, limit, fetch) -> dict:
@@ -157,21 +169,21 @@ def _card_rulings(con, card, with_card, query, limit, fetch) -> dict:
     kid, name = _konami_id(con, card)
     body = rul.card(kid)
     faq = []
-    for _, lines in sorted((body.get("faqData") or {}).get("entries", {}).items(), key=lambda kv: float(kv[0])):  # keys can be "0.5"
+    for _, lines in sorted((body.get("faqData") or {}).get("entries", {}).items(), key=lambda kv: _entry_key(kv[0])):
         en = [rul.text(x.get("en")) for x in lines if x.get("en")]
         if en:
             faq.append(" ".join(en))
     qids = sorted(set(body.get("qaIndex") or []), reverse=True)  # newest first
     out = {"card": name, "konami_id": kid}
+    names = [name]
     if with_card:
         kid2, name2 = _konami_id(con, with_card)
         qids = [q for q in qids if q in set(rul.card(kid2).get("qaIndex") or [])]
         out["with_card"] = name2
+        names.append(name2)
     words = [w.casefold() for w in re.findall(r"\w+", query or "")]
-    shown, searched, skipped = [], 0, 0
-    for q in qids:
-        if len(shown) >= limit:
-            break
+    found, searched, skipped = [], 0, 0
+    for q in qids:  # cached Q&As are free; uncached ones stop at MAX_FETCH per call
         data = rul.qa(q)
         if data is None:
             skipped += 1
@@ -182,11 +194,17 @@ def _card_rulings(con, card, with_card, query, limit, fetch) -> dict:
             continue
         item = {"id": q, "title": rul.text(en.get("title")), "question": rul.text(en.get("question")),
                 "answer": rul.text(en.get("answer")), "date": (en.get("thisSrc") or {}).get("date"),
-                "translation": en.get("translationStatus"), "cards": [rul.name(c) for c in data.get("cards", [])],
-                "url": f"{BASE}/qa#{q}"}
-        hay = " ".join(str(item[k]) for k in ("title", "question", "answer")).casefold()
-        if all(w in hay for w in words):
-            shown.append(item)
+                "translation": en.get("translationStatus"), "url": f"{BASE}/qa#{q}"}
+        hay = " ".join(str(item[k]) for k in ("title", "question", "answer"))
+        if not all(w in hay.casefold() for w in words):
+            continue
+        # Omnibus Q&As list dozens of cards without discussing them: rank Q&As whose text names the cards first.
+        item["names_in_text"] = [n for n in names if f'"{n}"' in hay]
+        cards = [rul.name(c) for c in data.get("cards", [])[:8]]
+        item["cards"] = cards if len(data.get("cards", [])) <= 8 else cards + [f"... {len(data['cards'])} cards in all"]
+        found.append(item)
+    found.sort(key=lambda it: (-len(it["names_in_text"]), -it["id"]))
+    shown = found[:limit]
     out.update({
         "faq": faq, "qa_total": len(qids), "qa_shown": len(shown), "qa": shown,
         "card_url": f"{BASE}/card#{kid}",
@@ -196,9 +214,15 @@ def _card_rulings(con, card, with_card, query, limit, fetch) -> dict:
         "cache": {"revision": rul._state("revision"), "checked_at": rul._state("checked_at"), "sync": sync,
                   "fetched_now": rul.fetched},
     })
-    if words and len(shown) < limit and (skipped or searched < len(qids)):
-        out["note"] = (f"searched {searched} of {len(qids)} Q&As (fetch cap {MAX_FETCH} per call); "
-                       "ask again to search more, or open card_url")
-    elif skipped:
-        out["note"] = f"{skipped} Q&As not fetched this call (fetch cap {MAX_FETCH}); ask again for more"
+    notes = []
+    if skipped:
+        notes.append(f"searched {searched} of {len(qids)} Q&As (fetch cap {MAX_FETCH} per call); "
+                     "ask again to search the rest, or open card_url")
+    if with_card and not any(len(it["names_in_text"]) == 2 for it in found):
+        notes.append("No Q&A found names both cards in its text: they only appear together in card lists, "
+                     "so this interaction is unverified.")
+    elif shown and not shown[0]["names_in_text"]:
+        notes.append("None of these Q&As names the card in its text; they only list it.")
+    if notes:
+        out["note"] = " ".join(notes)
     return out

@@ -27,7 +27,7 @@ DB_PATH = DATA_DIR / "cards.sqlite"
 DBVER_URL = "https://db.ygoprodeck.com/api/v7/checkDBVer.php"
 BAN_LIMIT = {"Forbidden": 0, "Limited": 1, "Semi-Limited": 2}
 QUOTED = re.compile(r'"([^"]+)"')  # Konami text quotes card and archetype names
-SCHEMA_VERSION = 3 # bump when build() fills new tables; older indexes are rebuilt
+SCHEMA_VERSION = 4  # bump when build() fills new tables; older indexes are rebuilt
 CHECK_EVERY = timedelta(hours=24)  # ask YGOProDeck for its DB version at most this often
 STALE_AFTER = timedelta(days=7)  # unverified for this long -> answers say stale
 

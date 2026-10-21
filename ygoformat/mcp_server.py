@@ -95,6 +95,7 @@ def search_cards(
 def card_lookup(query: str) -> dict:
     """One card by name or passcode: full text, stats, status in every format (limit, Genesys points,
     legality and why not), alt passcodes, quoted names in its text, and rulings links.
+    unresolved_mentions lists quoted names that match no card (likely data typos) with the closest names.
     Unknown or ambiguous names return candidates instead of a guess."""
     return _call(cardtools.card_lookup, query)
 
@@ -110,8 +111,9 @@ def archetype(name: str, format: Format, include_text: bool | None = None) -> di
 @server.tool(annotations=READ_ONLY)
 def meta_snapshot(format: Format, days: int = 60, top: int = 15) -> dict:
     """Recent tournament tops (Yugioh Meta) for the format: deck-type shares, top-8s and wins, how many
-    lists are still legal under today's list or points (average points for Genesys), and the most-played
-    cards. Genesys = Genesys events; Advanced = TCG lists outside Genesys and OCG."""
+    lists are still legal under today's list or points (average points for Genesys), the cards that make
+    the most lists illegal now (most_common_blockers), and the most-played cards.
+    Genesys = Genesys events; Advanced = TCG lists outside Genesys and OCG."""
     return _call(_with_meta(formatmeta.meta_snapshot), format, days=days, top=top)
 
 
@@ -130,9 +132,11 @@ def card_rulings(card: str, with_card: str | None = None, query: str | None = No
     """Official FAQ and Q&A rulings for a card (Konami OCG database via YGOResources, cached locally).
     with_card: only Q&As that involve both cards (best for "does X work with Y" questions).
     query: only Q&As containing all these words, e.g. "cost banish" or "damage step".
-    Each Q&A has title, question, answer, date and translation status. These are OCG rulings and TCG
-    rulings can differ: quote them, don't extend them past what they cover. Requests are capped per call
-    to respect YGOResources; the note says when more remain."""
+    Each Q&A has title, question, answer, date, translation status and names_in_text; Q&As whose text
+    names the card(s) come first, ahead of omnibus entries that only list them. With with_card, the note
+    says when no Q&A discusses both cards (the interaction is then unverified). These are OCG rulings and
+    TCG rulings can differ: quote them, don't extend them past what they cover. Requests are capped per
+    call to respect YGOResources; the note says when more remain."""
     return _call(rulings.card_rulings, card, with_card=with_card, query=query, limit=limit)
 
 
@@ -146,16 +150,21 @@ def find_links(
     archetypes: list[str] | None = None,
     max_points: int | None = None,
     point_cap: int | None = None,
-    limit: int = 12,
+    limit: int = 10,
 ) -> dict:
-    """Bridges and support for a deck (or just a few cards), legal in `format` and within budget:
-      your_archetypes_unplayed  members of your archetypes you don't run, with which of your cards fetch
-                          them (reached_by) and which they fetch (reaches_your); check these first
-      into_your_deck     outside cards whose effects add/summon/send/banish/Set your cards (with evidence)
-      your_deck_reaches   what your cards can already fetch outside the list, by archetype
-      bridges             other engines tied to your deck through those cards
-      extra_deck_options  Extra Deck monsters your monsters satisfy the materials of
-      deck_locks          "cannot Special Summon except X" in your deck; suggestions that break one say so
+    """Bridges and support for a deck (or just a few cards), legal in `format` and within budget.
+    A "fetch" is an add / Special Summon / Set / Fusion Summon effect (never a cost; Extra Deck monsters
+    can't come from hand or Deck).
+      your_archetypes_unplayed  members of your archetypes you don't run: which of your cards fetch them
+                          (fetched_by) and which of yours they fetch (fetches_your); check these first
+      into_your_deck     outside cards that fetch your cards, most-played targets first (with evidence)
+      your_deck_reaches   what your cards already fetch outside the list, by archetype (named/archetype links)
+      generic_searchers   your cards that fetch by Attribute/Type only (e.g. any Level 4 Warrior), one line each
+      bridges             other engines tied to your deck through those cards; mostly_blocked_by_deck_locks
+                          marks engines your own locks would stop
+      extra_deck_options  Extra Deck monsters your monsters can be material for, lock-compatible first
+      deck_locks          your deck's Special Summon locks and conditions, with which of your own cards they block
+    Suggestions that break one of your locks carry breaks_deck_locks. more_not_shown counts cut items.
     Genesys: suggestions are limited to the points left (point_cap minus the deck's points) unless
     max_points is given. Links are parsed from card text, not verified rulings: read each item's
     evidence and ruling_flags, and validate_deck any final list.

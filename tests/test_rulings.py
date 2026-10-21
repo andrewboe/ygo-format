@@ -44,6 +44,7 @@ class FakeYR:
         if path.startswith("/data/card/"):
             k = int(path.rsplit("/", 1)[1])
             return {"faqData": {"entries": {"1": [{"en": "About this card's effect:"}, {"en": "It is a Quick Effect."}],
+                                            "0.5": [{"en": "A note before effect 1."}],  # real keys can be fractional
                                             "2": [{"ja": "untranslated"}]}},
                     "qaIndex": self.cards.get(k, [])}, self.rev
         if path.startswith("/data/qa/"):
@@ -58,11 +59,14 @@ class FakeYR:
 def test_faq_qas_newest_first_and_names(con):
     fake = FakeYR(con)
     r = rulings.card_rulings(con, "Illusion Gate", fetch=fake)
-    assert r["faq"] == ["About this card's effect: It is a Quick Effect."]  # untranslated entry skipped
-    assert [q["id"] for q in r["qa"]] == [3, 2, 1] and r["qa_total"] == 3
-    assert '"Destiny HERO - Malicious"' in r["qa"][1]["question"]  # <<konami id>> -> local name
-    assert '"Some OCG Card"' in r["qa"][0]["answer"]  # unknown locally -> name index (one request)
-    assert r["qa"][0]["url"].endswith("/qa#3") and "OCG rulings" in r["source"]
+    # Fractional keys sort in place; the untranslated entry is skipped.
+    assert r["faq"] == ["A note before effect 1.", "About this card's effect: It is a Quick Effect."]
+    # Q&As whose text names the card come first, then newest first.
+    assert [q["id"] for q in r["qa"]] == [1, 3, 2] and r["qa_total"] == 3
+    assert r["qa"][0]["names_in_text"] == ["Illusion Gate"] and r["qa"][1]["names_in_text"] == []
+    assert '"Destiny HERO - Malicious"' in r["qa"][2]["question"]  # <<konami id>> -> local name
+    assert '"Some OCG Card"' in r["qa"][1]["answer"]  # unknown locally -> name index (one request)
+    assert r["qa"][1]["url"].endswith("/qa#3") and "OCG rulings" in r["source"]
 
 
 def test_cached_after_first_call(con):
@@ -76,6 +80,15 @@ def test_cached_after_first_call(con):
 def test_with_card_intersects_qa_indexes(con):
     r = rulings.card_rulings(con, "Illusion Gate", with_card="Destiny HERO - Malicious", fetch=FakeYR(con))
     assert r["with_card"] == "Destiny HERO - Malicious" and [q["id"] for q in r["qa"]] == [2]
+    # Q&A 2 names Malicious but not Illusion Gate in its text: the interaction is flagged unverified.
+    assert "unverified" in r["note"]
+
+
+def test_parse_bug_is_not_called_a_network_error(con):
+    def broken(path):
+        return {"faqData": {"entries": {"x": "not a list of lines"}}, "qaIndex": []}, 1
+    with pytest.raises(DeckInputError, match="bug in card_rulings"):
+        rulings.card_rulings(con, "Illusion Gate", fetch=broken)
 
 
 def test_query_filters_words(con):
@@ -94,7 +107,8 @@ def test_manifest_drops_changed_entries(con):
     fake.calls.clear()
     r = rulings.card_rulings(con, "Illusion Gate", fetch=fake)
     assert fake.calls == ["/manifest/100", "/data/qa/3"]
-    assert r["qa"][0]["answer"] == "Updated answer." and r["cache"]["sync"].startswith("synced")
+    assert next(q for q in r["qa"] if q["id"] == 3)["answer"] == "Updated answer."
+    assert r["cache"]["sync"].startswith("synced")
 
 
 def test_fetch_cap(con, monkeypatch):
@@ -111,18 +125,3 @@ def test_errors_are_clear(con):
         raise ConnectionError("offline")
     with pytest.raises(DeckInputError, match="YGOResources request failed"):
         rulings.card_rulings(con, "Illusion Gate", fetch=down)
-
-
-def test_fractional_faq_keys_sort(con):
-    """YGOResources FAQ entry keys can be fractional ("0.5"); they sort numerically instead of crashing."""
-    fake = FakeYR(con)
-    plain = fake.__call__
-
-    def fetch(path):
-        body, rev = plain(path)
-        if path.startswith("/data/card/"):
-            body["faqData"]["entries"]["0.5"] = [{"en": "Inserted note."}]
-        return body, rev
-
-    r = rulings.card_rulings(con, "Illusion Gate", fetch=fetch)
-    assert r["faq"][0] == "Inserted note."

@@ -6,6 +6,7 @@ insensitive if unique); unmatched names are kept by name and reported, never gue
 Points and ban status are today's, not the ones in force when the list was played.
 """
 import json
+import re
 import sqlite3
 import time
 from collections import Counter, defaultdict
@@ -64,7 +65,18 @@ def _name_index(con: sqlite3.Connection) -> dict[str, int | None]:
     return idx
 
 
+# Yugioh Meta spellings that differ from the official TCG names (each checked against cards.sqlite).
+# Only exact, confirmed pairs: anything else stays unmatched and is reported, never guessed.
+ALIASES = {
+    "Empire of Endymion": "Endymion Empire",
+    "Stellarnova Binding": "Stellarnova Bonds",
+    "Arrow of Regulus": "Regulus' Arrow",
+    "Reeshaddoll Wendikuruhu": "Reeshaddoll Wendikurhu",
+}
+
+
 def _lookup(idx, name: str) -> int | None:
+    name = ALIASES.get(name, name)
     for key in (name, "n:" + norm_name(name), "l:" + loose_name(name), "b:" + loose_name(name)):
         if key in idx:
             return idx[key]
@@ -143,8 +155,10 @@ def _list_cards(con, ids: list[str]) -> dict[str, list[sqlite3.Row]]:
     return out
 
 
-def _legal_now(con, spec, rows: list[sqlite3.Row]) -> tuple[bool | None, int]:
-    """Is this list legal under today's list/points? None if a card name didn't match. Returns (legal, points)."""
+def _legal_now(con, spec, rows: list[sqlite3.Row], blockers: Counter | None = None) -> tuple[bool | None, int]:
+    """Is this list legal under today's list/points? None if a card name didn't match. Returns (legal, points).
+    blockers, if given, counts the cards that make it illegal (over their limit, a banned card type, or,
+    over the points cap, every pointed card)."""
     totals: Counter = Counter()
     for r in rows:
         if r["canonical_id"] is None:
@@ -153,14 +167,17 @@ def _legal_now(con, spec, rows: list[sqlite3.Row]) -> tuple[bool | None, int]:
     if not totals:
         return None, 0
     pts = sum(_points(con, spec, cid) * n for cid, n in totals.items())
-    ok = all(n <= _limit(con, spec, cid) for cid, n in totals.items())
+    bad = {cid for cid, n in totals.items() if n > _limit(con, spec, cid)}
     if spec.banned_frames:
         frames = {cid: f for cid, f in con.execute(
             f"SELECT passcode, frame_type FROM cards WHERE passcode IN ({','.join('?' * len(totals))})", list(totals))}
-        ok = ok and not any(set(frames.get(cid, "").split("_")) & spec.banned_frames for cid in totals)
-    if spec.points:
-        ok = ok and pts <= spec.default_cap
-    return ok, pts
+        bad |= {cid for cid in totals if set(frames.get(cid, "").split("_")) & spec.banned_frames}
+    over = bool(spec.points) and pts > spec.default_cap
+    if blockers is not None:
+        blockers.update(bad)
+        if over:
+            blockers.update(cid for cid in totals if _points(con, spec, cid))
+    return not bad and not over, pts
 
 
 def meta_snapshot(con: sqlite3.Connection, format: str, days: int = 60, top: int = 15) -> dict:
@@ -171,9 +188,10 @@ def meta_snapshot(con: sqlite3.Connection, format: str, days: int = 60, top: int
     cards = _list_cards(con, [l["id"] for l in lists])
     by_type = defaultdict(list)
     legal, points = {}, {}
+    blockers: Counter = Counter()
     for l in lists:
         by_type[l["deck_type"]].append(l)
-        legal[l["id"]], points[l["id"]] = _legal_now(con, spec, cards[l["id"]])
+        legal[l["id"]], points[l["id"]] = _legal_now(con, spec, cards[l["id"]], blockers)
     types = []
     for t, ls in sorted(by_type.items(), key=lambda kv: -len(kv[1])):
         row = {"deck_type": t, "lists": len(ls), "share": round(len(ls) / len(lists), 3),
@@ -192,7 +210,20 @@ def meta_snapshot(con: sqlite3.Connection, format: str, days: int = 60, top: int
         "staples": _inclusion_table(con, spec, lists, cards, top),
         "note": "Legality and points are today's; lists played under an older list or points may be illegal now.",
     }
+    if blockers:  # which cards make the most recent lists illegal now (e.g. right after a new F&L list)
+        names = dict(con.execute(f"SELECT passcode, name FROM cards WHERE passcode IN "
+                                 f"({','.join('?' * len(blockers))})", list(blockers)).fetchall())
+        out["most_common_blockers"] = [{"card": names.get(c, str(c)), "lists": n} for c, n in blockers.most_common(8)]
     return out
+
+
+def _similar_deck_types(con, format: str, days: int, query: str) -> list[str]:
+    """Deck types sharing a word with the query ("Destiny HERO" -> "HEROs"), plural-insensitive."""
+    def words(s: str) -> set[str]:
+        return {w.rstrip("s") for w in re.findall(r"\w+", s.casefold()) if len(w) > 1}
+    want = words(query)
+    seen = Counter(l["deck_type"] for l in _window(con, format, days))
+    return [t for t, _ in seen.most_common() if want & words(t)][:10]
 
 
 def _inclusion_table(con, spec, lists, cards, top: int) -> list[dict]:
@@ -236,11 +267,9 @@ def meta_inclusion(con: sqlite3.Connection, format: str, card: str | None = None
     if deck_type:
         lists = _window(con, format, days, deck_type)
         if not lists:
-            names = sorted({l["deck_type"] for l in _window(con, format, days)
-                            if deck_type.casefold() in l["deck_type"].casefold()})
             return {"deck_type": deck_type, "lists": 0,
                     "note": f"no lists with that exact deck type in {days} days",
-                    "similar_deck_types": names}
+                    "similar_deck_types": _similar_deck_types(con, format, days, deck_type)}
         cards = _list_cards(con, [l["id"] for l in lists])
         return {"format": spec.title, "deck_type": lists[0]["deck_type"], "lists": len(lists),
                 "window": f"{min(l['day'] for l in lists)} .. {max(l['day'] for l in lists)}",

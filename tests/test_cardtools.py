@@ -118,3 +118,21 @@ def test_meta_snapshot_and_inclusion(con):
     table = formatmeta.meta_inclusion(con, "genesys", deck_type="d-hero")["cards"]
     assert any(r.get("unmatched_name") for r in table)
     assert formatmeta.meta_inclusion(con, "genesys", deck_type="HERO")["similar_deck_types"] == ["D-HERO"]
+    # Word overlap, not substring: "Destiny HERO" finds "D-HERO".
+    assert formatmeta.meta_inclusion(con, "genesys", deck_type="Destiny HERO")["similar_deck_types"] == ["D-HERO"]
+    # The card that makes the Advanced list illegal now is named.
+    assert formatmeta.meta_snapshot(con, "tcg_advanced")["most_common_blockers"] == \
+        [{"card": "Herald of the Arc Light", "lists": 1}]
+
+
+def test_meta_name_aliases(con, monkeypatch):
+    monkeypatch.setitem(formatmeta.ALIASES, "Gate of Illusion", "Illusion Gate")
+    formatmeta.load(con, [_raw(9, "genesys", "Alias", [("Gate of Illusion", 2)])], time.time(), "2026-01-01")
+    inc = formatmeta.meta_inclusion(con, "genesys", card="Illusion Gate")
+    assert inc["playing"] == 1
+
+
+def test_dangling_quoted_names_flagged(con):
+    from ygoformat.cardtools import _dangling
+    out = _dangling(con, ["Ilusion Gate", "Destiny HERO", "Illusion Gate"], "Some Card")
+    assert out == [{"name": "Ilusion Gate", "closest": ["Illusion Gate"]}]  # archetypes and real names pass

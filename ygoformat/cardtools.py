@@ -5,6 +5,7 @@ Archetype membership follows the game rule: a card is an "X" card if its name co
 that are not members (e.g. "Dark City" is tagged Destiny HERO), so tag-only cards are listed as
 support, alongside outside cards whose text names "X".
 """
+import difflib
 import re
 import sqlite3
 from datetime import date
@@ -164,11 +165,25 @@ def card_lookup(con: sqlite3.Connection, query: str | int) -> dict:
     row["tcg_date"], row["ocg_date"] = c["tcg_date"], c["ocg_date"]
     row["mentions"] = [r[0] for r in con.execute("SELECT mention FROM mentions WHERE canonical_id = ?",
                                                   (c["canonical_id"],))]
+    if dangling := _dangling(con, row["mentions"], c["name"]):
+        row["unresolved_mentions"] = dangling
     if c["konami_id"]:
         row["rulings_links"] = [
             f"https://www.db.yugioh-card.com/yugiohdb/card_search.action?ope=2&cid={c['konami_id']}&request_locale=en",
             f"https://db.ygoresources.com/card#{c['konami_id']}"]
     return {"match": "exact" if not note else "normalized", **({"resolved": note} if note else {}), "card": row}
+
+
+def _dangling(con: sqlite3.Connection, mentions: list[str], own: str) -> list[dict]:
+    """Quoted names in the text that are neither a card nor part of any card's name (likely data typos,
+    e.g. "Fairy Tale Tails"), with the closest real names."""
+    out = []
+    for m in mentions:
+        if m == own or con.execute("SELECT 1 FROM cards WHERE instr(name, ?) > 0 LIMIT 1", (m,)).fetchone():
+            continue
+        names = [r[0] for r in con.execute("SELECT DISTINCT name FROM cards WHERE passcode = canonical_id")]
+        out.append({"name": m, "closest": difflib.get_close_matches(m, names, n=3, cutoff=0.75)})
+    return out
 
 
 def archetype(con: sqlite3.Connection, name: str, format: str, as_of: str | None = None,

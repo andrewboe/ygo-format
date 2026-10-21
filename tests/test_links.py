@@ -100,12 +100,12 @@ def test_find_links_dhero(con):
     r = find_links(con, "genesys", decklist=DHERO, as_of="2026-10-20")
     into = {x["name"]: x for x in r["into_your_deck"]}
     assert "Elemental HERO Stratos" in into and "Elemental HERO Shadow Mist" in into
-    assert "Destiny HERO - Malicious" in into["Elemental HERO Stratos"]["reaches_your"]
+    assert "Destiny HERO - Malicious" in into["Elemental HERO Stratos"]["fetches_your"]
     # Stratos is WIND: Fusion Destiny's "except DARK HERO monsters" lock is flagged.
     assert any("Fusion Destiny" in b for b in into["Elemental HERO Stratos"]["breaks_deck_locks"])
     extra = {x["name"] for x in r["extra_deck_options"]}
     assert {"Destiny HERO - Destroyer Phoenix Enforcer", "Destiny HERO - Dystopia"} <= extra
-    reach = {e["name"] for g in r["your_deck_reaches"] for e in g["examples"]}
+    reach = {e.split(" (")[0] for g in r["your_deck_reaches"] for e in g["examples"]}
     assert "Polymerization" in reach  # Dreadnought Servant adds "Polymerization"
     assert any(b["engine"] == "Elemental HERO" for b in r["bridges"])
     assert r["deck_locks"][0]["card"] == "Fusion Destiny"
@@ -149,5 +149,89 @@ def test_find_links_lists_own_archetype_cards_not_run(con):
     r = find_links(con, "genesys", decklist=DHERO, as_of="2026-10-20")
     unplayed = {x["name"]: x for x in r["your_archetypes_unplayed"]}
     assert "Destiny HERO - Dreadmaster" in unplayed  # a Destiny HERO the list doesn't run
-    assert "Destiny HERO - Malicious" in unplayed["Destiny HERO - Dreadmaster"]["reaches_your"]
+    assert "Destiny HERO - Malicious" in unplayed["Destiny HERO - Dreadmaster"]["fetches_your"]
     assert not set(unplayed) & {"Destiny HERO - Malicious", "Destiny HERO - Diamond Dude"}  # already in the deck
+
+
+# ---------------------------------------------------------------- locks, fusions, fetch rules (dry-run fixes)
+
+def locks(text):
+    return extract_card(text, NAMES)["locks"]
+
+
+def test_lock_clause_ends_where_the_sentence_moves_on():
+    # Linkage!: the old parser read past ", also" and produced a junk DARK/LIGHT filter.
+    (lk, mmz) = locks('If you control no monsters in your Main Monster Zone: You cannot Special Summon monsters from the '
+                      'Extra Deck for the rest of this turn after this card resolves, except "Sky Striker Ace" monsters, '
+                      'also send 1 other card you control to the GY.')
+    assert lk["scope"] == "extra" and lk["filter"] == {"archetypes": ["Sky Striker Ace"], "kinds": ["monster"]}
+    assert mmz["scope"] == "empty_mmz"
+    # Branded Fusion: the except clause comes before "the turn you activate this card".
+    (lk,) = locks("You cannot Special Summon from the Extra Deck, except Fusion Monsters, the turn you activate this card.")
+    assert lk["scope"] == "extra" and lk["filter"] == {"kinds": ["fusion"]}
+
+
+def test_lock_extra_deck_exemption_and_non_archetype():
+    (lk,) = locks('you cannot Special Summon monsters, except "Artmage" monsters or from the Extra Deck.')
+    assert lk["scope"] == "main" and lk["filter"] == {"archetypes": ["Artmage"], "kinds": ["monster"]}
+    (lk,) = locks('you cannot Special Summon non-"Vaylantz" monsters for the rest of this turn, except from the Extra Deck.')
+    assert lk["scope"] == "main" and lk["filter"] == {"archetypes": ["Vaylantz"], "kinds": ["monster"]}
+
+
+def test_later_lock_except_is_not_a_search_exclusion():
+    (e,) = effects('add 1 "Polymerization" Spell or "Fusion" Spell from your Deck to your hand, and if you do, shuffle '
+                   'this card into the Deck, also for the rest of this turn, you cannot Special Summon from the Extra '
+                   'Deck, except "HERO" monsters.')
+    assert "exclude" not in e["filter"]
+
+
+def test_condition_kept_in_evidence_for_bullets():
+    effs = effects('If you control a Fiend monster: Activate 1 of these effects;\n● 1+: Draw 1 card.\n'
+                   '● 4+: Add 1 "HERO" monster from your Deck to your hand.')
+    assert effs[0]["evidence"].startswith("If you control a Fiend monster")
+
+
+def test_fusion_summon_effects():
+    (e,) = effects('Fusion Summon 1 Fusion Monster from your Extra Deck that lists a "Destiny HERO" monster as '
+                   'material, using monsters from your hand or Deck as Fusion Material.')
+    assert e["verb"] == "fusion" and e["zones"] == ["Extra Deck"]
+    assert e["filter"] == {"kinds": ["fusion"], "material_mentions": ["Destiny HERO"]}
+    assert "materials from: hand, Deck" in e["flags"]
+    (e,) = effects('Fusion Summon 1 Fusion Monster that mentions "Blue-Eyes White Dragon" or "Blue-Eyes Ultimate '
+                   'Dragon" as material, by shuffling the Fusion Materials listed on it from your hand.')
+    assert e["filter"]["material_mentions"] == ["Blue-Eyes White Dragon", "Blue-Eyes Ultimate Dragon"]
+
+
+def test_fetch_rules(con):
+    from ygoformat.formats import FORMATS
+    from ygoformat.linkfind import _pool
+    from datetime import date
+    pool = _pool(con, FORMATS["genesys"], date(2026, 10, 20))
+    by = {f.name: f for f in pool.facts.values()}
+    src = by["Elemental HERO Stratos"].cid
+    search = {"verb": "add", "zones": ["Deck"], "filter": {"archetypes": ["Destiny HERO"], "kinds": ["monster"]},
+              "cost": False}
+    assert pool.fetches(src, search, by["Destiny HERO - Malicious"])
+    assert not pool.fetches(src, search, by["Destiny HERO - Dystopia"])  # Extra Deck monster: not in the Deck
+    assert not pool.fetches(src, {**search, "cost": True}, by["Destiny HERO - Malicious"])  # a cost is not a fetch
+    assert not pool.fetches(src, {**search, "verb": "banish"}, by["Destiny HERO - Malicious"])
+    fusion = {"verb": "fusion", "zones": ["Extra Deck"], "cost": False,
+              "filter": {"kinds": ["fusion"], "material_mentions": ["Destiny HERO"]}}
+    assert pool.fetches(src, fusion, by["Destiny HERO - Dystopia"])  # '2 "Destiny HERO" monsters'
+    assert not pool.fetches(src, fusion, by["Destiny HERO - Malicious"])
+
+
+def test_find_links_deck_locks_block_own_cards_and_rank_options(con):
+    deck = {"main": DHERO["main"] + ["Elemental HERO Stratos", "Reinforcement of the Army"],
+            "extra": ["Destiny HERO - Dystopia"]}
+    r = find_links(con, "tcg_advanced", decklist=deck, as_of="2026-10-20")
+    lock = next(x for x in r["deck_locks"] if x["card"] == "Fusion Destiny")
+    assert lock["kind"] == "all" and "Elemental HERO Stratos" in lock["blocks_your"]  # WIND, not DARK
+    # Fusion Destiny now fetches the D-HERO Fusions it can summon, so they show as reachable.
+    reach = {e.split(" (")[0] for g in r["your_deck_reaches"] for e in g["examples"]}
+    assert "Destiny HERO - Destroyer Phoenix Enforcer" in reach
+    # Reinforcement (any Level 4 or lower Warrior) is a generic searcher: one line, not an archetype group.
+    assert any(g["card"] == "Reinforcement of the Army" for g in r["generic_searchers"])
+    # Lock-compatible Extra Deck options come before ones that break a deck lock.
+    flags = [("breaks_deck_locks" in x) for x in r["extra_deck_options"]]
+    assert flags == sorted(flags)

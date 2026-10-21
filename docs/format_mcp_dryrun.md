@@ -386,3 +386,41 @@ db 147.37), saved as `data/decks/sky-striker-radiant-typhoon.tcg_advanced.ydk`. 
       rebuilt in `data/cards.sqlite`. On this deck Verre ranks 3rd, with Endymion Empire and Lacrima
       as evidence, and Genni 11th (via Lacrima, and it fetches Verre). The MCP server needs a restart
       to use the new code.
+
+## Fix pass (2026-10-21): find_links, locks, card_rulings, meta
+
+**Fixed**
+- **card_rulings**
+  - 17b/25/36/46: fractional FAQ keys ("0.5", "1.5") sort as numbers, so they no longer crash.
+  - Parsing bugs are now reported as bugs, not as network errors.
+  - 17/18/46: Q&As whose text names the card(s) rank first (`names_in_text`). Omnibus `cards` lists are cut to 8 names plus a count. With `with_card`, the note says when no Q&A discusses both cards.
+- **Locks**
+  - 8/23: locks with a type-only filter ("except Fusion Monsters": Branded Fusion, Artmage) are no longer dropped.
+  - The except-clause stops at ", also" or ", the turn ...", which fixes Linkage's junk filter and the false Shizuku break (45).
+  - 24: "except ... or from the Extra Deck" now exempts Extra Deck summons. `non-"X"` locks (Vaylantz) keep X.
+  - 23: "you cannot activate monster effects" is listed as a restriction.
+  - 44: "no monsters in your Main Monster Zone" is listed as a condition, with the deck's main-deck monster count.
+- **find_links**
+  - Fairy Tail #1 and 11: a fetch is add, Special Summon, Set or Fusion Summon, and never a cost. An Extra Deck monster can't be fetched from the hand or Deck. One rule now covers every section.
+  - 13: Fusion Summon effects are links ("lists a 'Destiny HERO' monster as material" matches the Fusions that list one). Fusion Destiny, Branded Fusion and Artmage now fetch their Fusions.
+  - 7: a bridge's own lock filters its targets, so Sabatiel no longer bridges to non-HERO Fusions. Engines your deck's locks would mostly block are marked `mostly_blocked_by_deck_locks` and ranked last.
+  - 35: `deck_locks` lists which of your own cards each lock blocks; on Fairy Tail, Matchgiru blocks 12. Lock-compatible `extra_deck_options` rank first.
+  - 6: output is now 16–20k characters on these decks (was 24–32k, about 70k on the first run). Changes behind that:
+    - searchers by Attribute/Type collapse into `generic_searchers`, one line each;
+    - examples are names only;
+    - one evidence line per item;
+    - `more_not_shown` counts what was cut.
+  - 12: `fetches_your` lists the most-played targets first, plus `fetches_count`.
+  - Fairy Tail #4: Attribute/Type-only fetches can't outrank named searchers on hit count.
+  - 11: evidence keeps the effect's condition for bullet effects (Evil Mind's "If you control a Fiend monster").
+  - Sabatiel's search no longer picks up the later lock's `except "HERO"` as an exclusion.
+- **Meta**
+  - 14: deck-type suggestions match by word ("Destiny HERO" or "D-HERO" finds "HEROs").
+  - 16: `most_common_blockers` names the cards that make recent lists illegal now.
+  - 26/34: Yugioh Meta aliases (Empire of Endymion, Stellarnova Binding, Arrow of Regulus, Reeshaddoll Wendikuruhu).
+- **card_lookup**
+  - 33: `unresolved_mentions` flags quoted names that match no card, with the closest names ("Fairy Tale Tails" → "Fairy Tail Tales").
+
+**Renamed in find_links output:** `reaches_your` → `fetches_your`, `reached_by` → `fetched_by`, `reaches_unplayed` → `fetches_unplayed`.
+
+**Not changed:** 9 and 10 are only partly addressed. Materials are still matched by type: lock-compatible options now rank first and nothing is hidden (`more_not_shown`), but whether a summon is achievable isn't modelled. The find_lines / line_result items (1–5, 4c–4e, 40–43) and data gaps (15, El Shaddoll Meshachrer, Shadowreaver Knight 21, Layer 19) are outside these files.
